@@ -1,0 +1,146 @@
+{% extends 'base.html' %}
+
+{% block title %}Blood Inventory - BloodSync{% endblock %}
+
+{% block content %}
+<section class="inventory-section py-5">
+    <div class="container">
+
+        <!-- Header -->
+        <div class="row mb-4">
+            <div class="col-12 text-center">
+                <h2>
+                    <i class="fas fa-warehouse text-danger me-2"></i>
+                    Blood Inventory
+                </h2>
+                <p class="text-muted">
+                    Real-time blood availability across all blood groups
+                </p>
+            </div>
+        </div>
+
+        <!-- Statistics Cards -->
+        <div class="row mb-5">
+            <div class="col-md-3 mb-3">
+                <div class="card bg-primary text-white text-center h-100">
+                    <div class="card-body">
+                        <i class="fas fa-tint fa-3x mb-3"></i>
+                        <h3>{{ stats.total_units | default(0) }}</h3>
+                        <p>Total Units Available</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-3 mb-3">
+                <div class="card bg-success text-white text-center h-100">
+                    <div class="card-body">
+                        <i class="fas fa-check-circle fa-3x mb-3"></i>
+                        <h3>{{ stats.total_donors | default(0) }}</h3>
+                        <p>Registered Donors</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-3 mb-3">
+                <div class="card bg-info text-white text-center h-100">
+                    <div class="card-body">
+                        <i class="fas fa-clipboard-list fa-3x mb-3"></i>
+                        <h3>{{ stats.total_requests | default(0) }}</h3>
+                        <p>Total Requests</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-3 mb-3">
+                <div class="card bg-warning text-dark text-center h-100">
+                    <div class="card-body">
+                        <i class="fas fa-exclamation-triangle fa-3x mb-3"></i>
+                        <h3>{{ stats.critical_groups | length }}</h3>
+                        <p>Critical Blood Groups</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Blood Inventory Grid -->
+        <div class="row mb-5">
+            {% for bg, data in inventory.items() %}
+            {% set units = data.units | default(0) | int %}
+
+            {# Progress bar width logic (NO CSS error) #}
+            {% if units < 20 %}
+                {% set bar_width = 'w-25' %}
+            {% elif units < 40 %}
+                {% set bar_width = 'w-50' %}
+            {% elif units < 70 %}
+                {% set bar_width = 'w-75' %}
+            {% else %}
+                {% set bar_width = 'w-100' %}
+            {% endif %}
+
+            <div class="col-md-3 mb-4">
+                <div class="card h-100
+                    {% if units < 20 %} border-danger
+                    {% elif units < 40 %} border-warning
+                    {% else %} border-success
+                    {% endif %}
+                ">
+
+                    <div class="card-header text-white
+                        {% if units < 20 %} bg-danger
+                        {% elif units < 40 %} bg-warning text-dark
+                        {% else %} bg-success
+                        {% endif %}
+                    ">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h4 class="mb-0">{{ bg }}</h4>
+                            <i class="fas fa-tint fa-2x"></i>
+                        </div>
+                    </div>
+
+                    <div class="card-body text-center">
+                        <h2 class="
+                            {% if units < 20 %} text-danger
+                            {% elif units < 40 %} text-warning
+                            {% else %} text-success
+                            {% endif %}
+                        ">
+                            {{ units }}
+                        </h2>
+
+                        <p class="text-muted">Units Available</p>
+                        <hr>
+
+                        <p>
+                            <i class="fas fa-users me-2"></i>
+                            {{ data.donors | default([]) | length }} donor(s)
+                        </p>
+                    </div>
+
+                    <div class="card-footer bg-transparent">
+                        <div class="progress" style="height:10px;">
+                            <div class="progress-bar {{ bar_width }}
+                                {% if units < 20 %} bg-danger
+                                {% elif units < 40 %} bg-warning
+                                {% else %} bg-success
+                                {% endif %}
+                            ">
+                            </div>
+                        </div>
+
+                        <small class="d-block text-center mt-1 text-muted">
+                            {% if units < 20 %} Critical
+                            {% elif units < 40 %} Low
+                            {% else %} Adequate
+                            {% endif %}
+                        </small>
+                    </div>
+
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+    </div>
+</section>
+{% endblock %}
