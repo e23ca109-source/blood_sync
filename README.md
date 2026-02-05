@@ -2,6 +2,49 @@
 
 BloodSync is a comprehensive web application that connects blood donors with recipients. It provides real-time donor matching, blood inventory management, and advanced request fulfillment with partial fulfillment tracking.
 
+## 🚀 Version 3.0 - Unified Local/AWS Implementation
+
+The application now supports both **local development** (in-memory storage) and **production deployment** (AWS DynamoDB) from a single codebase.
+
+### Configuration
+
+Set the `USE_AWS` environment variable to control the data storage mode:
+
+```bash
+# For local development (default)
+export USE_AWS=False
+python app.py
+
+# For AWS production
+export USE_AWS=True
+export AWS_REGION=ap-south-1  # or your preferred region
+python app.py
+```
+
+### AWS Setup (for Production)
+
+1. **Install AWS CLI and configure credentials:**
+   ```bash
+   pip install awscli
+   aws configure
+   ```
+
+2. **Create DynamoDB Tables:**
+   - `BloodSync_Users`
+   - `BloodSync_Donors`
+   - `BloodSync_Requests`
+   - `BloodSync_Inventory`
+
+3. **Set Environment Variables:**
+   ```bash
+   export USE_AWS=True
+   export AWS_REGION=ap-south-1
+   ```
+
+### Local Development (Default)
+
+No additional setup required. The app runs with in-memory data storage and includes sample data.
+
 ## 🆕 NEW Features (v2.1)
 
 ### ✅ Donor → Inventory Donation

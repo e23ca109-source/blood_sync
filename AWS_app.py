@@ -1,142 +1,259 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 import boto3
-import uuid
 import random
 from datetime import datetime
+from decimal import Decimal
 
+# ================= APP CONFIG =================
 app = Flask(__name__)
 app.secret_key = "bloodsync_secret_key"
 
-# ---------- AWS CONFIG ----------
+# ================= AWS CONFIG =================
 dynamodb = boto3.resource(
     'dynamodb',
-    region_name='ap-south-1'  # change if needed
+    region_name='ap-south-1'
 )
 
 users_table = dynamodb.Table('BloodSync_Users')
 donors_table = dynamodb.Table('BloodSync_Donors')
+requestors_table = dynamodb.Table('BloodSync_Requestors')
 requests_table = dynamodb.Table('BloodSync_Requests')
 inventory_table = dynamodb.Table('BloodSync_Inventory')
+assignments_table = dynamodb.Table('BloodSync_Assignments')
+donations_table = dynamodb.Table('BloodSync_Donations')
 
-# ---------- HELPERS ----------
+# ================= HELPERS =================
 def generate_6_digit_id():
     return str(random.randint(100000, 999999))
 
-# ---------- ROUTES ----------
-@app.route('/')
-def home():
-    return render_template('index.html')
+# ================= BLOOD COMPATIBILITY =================
+RECEIVE_COMPATIBILITY = {
+    'A+': ['A+', 'A-', 'O+', 'O-'],
+    'A-': ['A-', 'O-'],
+    'B+': ['B+', 'B-', 'O+', 'O-'],
+    'B-': ['B-', 'O-'],
+    'AB+': ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'],
+    'AB-': ['A-', 'B-', 'AB-', 'O-'],
+    'O+': ['O+', 'O-'],
+    'O-': ['O-']
+}
 
-# ---------- AUTH ----------
-@app.route('/register', methods=['POST'])
-def register():
-    user_id = generate_6_digit_id()
+# ================= INVENTORY =================
+def update_inventory(blood_group, units, operation):
+    item = inventory_table.get_item(
+        Key={'blood_group': blood_group}
+    ).get('Item', {'units': Decimal(0)})
 
-    users_table.put_item(
+    current = int(item['units'])
+    new_units = current + units if operation == 'add' else max(0, current - units)
+
+    inventory_table.put_item(
         Item={
-            'user_id': user_id,
-            'name': request.form['name'],
-            'email': request.form['email'],
-            'password': request.form['password'],
-            'role': request.form['role'],  # donor / requestor / admin
-            'created_at': str(datetime.now())
+            'blood_group': blood_group,
+            'units': Decimal(new_units)
         }
     )
 
-    flash("Registration successful")
+# ================= DASHBOARD STATS =================
+def get_statistics():
+    donors = donors_table.scan().get('Items', [])
+    requests_data = requests_table.scan().get('Items', [])
+    inventory = inventory_table.scan().get('Items', [])
+
+    total_units = sum(int(i['units']) for i in inventory)
+    critical = [i['blood_group'] for i in inventory if int(i['units']) < 20]
+
+    return {
+        'total_donors': len(donors),
+        'total_requests': len(requests_data),
+        'active_requests': sum(1 for r in requests_data if r['status'] in ['pending', 'partial']),
+        'fulfilled_requests': sum(1 for r in requests_data if r['status'] == 'fulfilled'),
+        'total_units': total_units,
+        'critical_groups': critical,
+        'inventory': inventory
+    }
+
+# ================= HOME =================
+@app.route('/')
+def home():
+    stats = get_statistics()
+    recent = requests_table.scan().get('Items', [])[:5]
+    return render_template('index.html', stats=stats, recent_requests=recent)
+
+# ================= AUTH =================
+@app.route('/register', methods=['POST'])
+def register():
+    users_table.put_item(
+        Item={
+            'user_id': generate_6_digit_id(),
+            'name': request.form['name'],
+            'email': request.form['email'],
+            'password': request.form['password'],
+            'role': request.form['role'],
+            'created_at': str(datetime.now())
+        }
+    )
+    flash("Registration successful", "success")
     return redirect(url_for('home'))
 
 @app.route('/login', methods=['POST'])
 def login():
-    email = request.form['email']
-    password = request.form['password']
-
-    response = users_table.scan()
-    for user in response['Items']:
-        if user['email'] == email and user['password'] == password:
-            session['user'] = user
-            return redirect(url_for(f"{user['role']}_dashboard"))
-
-    flash("Invalid credentials")
+    users = users_table.scan().get('Items', [])
+    for u in users:
+        if u['email'] == request.form['email'] and u['password'] == request.form['password']:
+            session['user'] = u
+            return redirect(url_for(f"{u['role']}_dashboard"))
+    flash("Invalid login", "danger")
     return redirect(url_for('home'))
 
-# ---------- DONOR ----------
-@app.route('/donor/dashboard')
-def donor_dashboard():
-    return render_template('donor_dashboard.html')
-
-@app.route('/donor/register', methods=['POST'])
-def donor_register():
-    donor_id = generate_6_digit_id()
-
-    donors_table.put_item(
-        Item={
-            'donor_id': donor_id,
-            'user_id': session['user']['user_id'],
-            'blood_group': request.form['blood_group'],
-            'health_condition': request.form['health_condition'],
-            'last_donated': request.form['last_donated']
-        }
-    )
-
-    flash("Donor registered successfully")
-    return redirect(url_for('donor_dashboard'))
-
-# ---------- REQUESTOR ----------
-@app.route('/requestor/dashboard')
-def requestor_dashboard():
-    inventory = inventory_table.scan()['Items']
-    return render_template('requestor_dashboard.html', inventory=inventory)
-
-@app.route('/request/blood', methods=['POST'])
-def request_blood():
-    request_id = generate_6_digit_id()
-
-    requests_table.put_item(
-        Item={
-            'request_id': request_id,
-            'user_id': session['user']['user_id'],
-            'blood_group': request.form['blood_group'],
-            'units': int(request.form['units']),
-            'status': 'Pending',
-            'requested_at': str(datetime.now())
-        }
-    )
-
-    flash("Blood request submitted")
-    return redirect(url_for('requestor_dashboard'))
-
-# ---------- ADMIN ----------
-@app.route('/admin/dashboard')
-def admin_dashboard():
-    donors = donors_table.scan()['Items']
-    requests_data = requests_table.scan()['Items']
-    inventory = inventory_table.scan()['Items']
-
-    return render_template(
-        'admin_dashboard.html',
-        donors=donors,
-        requests=requests_data,
-        inventory=inventory
-    )
-
-@app.route('/inventory/update', methods=['POST'])
-def update_inventory():
-    inventory_table.put_item(
-        Item={
-            'blood_group': request.form['blood_group'],
-            'units': int(request.form['units'])
-        }
-    )
-    flash("Inventory updated")
-    return redirect(url_for('admin_dashboard'))
-
-# ---------- LOGOUT ----------
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('home'))
 
-# ---------- RUN ----------
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+# ================= DONOR =================
+@app.route('/donor/register', methods=['GET', 'POST'])
+def donor_register():
+    if request.method == 'POST':
+        donor_id = generate_6_digit_id()
+        donors_table.put_item(
+            Item={
+                'donor_id': donor_id,
+                'name': request.form['name'],
+                'blood_group': request.form['blood_group'],
+                'health_condition': request.form['health_condition'],
+                'city': request.form['city'],
+                'available': True,
+                'status': 'active',
+                'last_donation': None,
+                'total_donations': 0,
+                'created_at': str(datetime.now())
+            }
+        )
+        flash(f"Registered successfully. Donor ID: {donor_id}", "success")
+        return redirect(url_for('donor_dashboard'))
+    return render_template('donor_register.html')
+
+@app.route('/donor/dashboard')
+def donor_dashboard():
+    donors = donors_table.scan().get('Items', [])
+    return render_template('donor_dashboard.html', donors=donors)
+
+# ================= REQUESTOR =================
+@app.route('/requestor/register', methods=['GET', 'POST'])
+def requestor_register():
+    if request.method == 'POST':
+        requestor_id = generate_6_digit_id()
+        requestors_table.put_item(
+            Item={
+                'requestor_id': requestor_id,
+                'name': request.form['name'],
+                'email': request.form['email'],
+                'created_at': str(datetime.now())
+            }
+        )
+        flash(f"Requestor ID: {requestor_id}", "success")
+        return redirect(url_for('requestor_dashboard'))
+    return render_template('requestor_register.html')
+
+@app.route('/requestor/dashboard')
+def requestor_dashboard():
+    inventory = inventory_table.scan().get('Items', [])
+    return render_template('requestor_dashboard.html', inventory=inventory)
+
+# ================= BLOOD REQUEST =================
+@app.route('/request/blood', methods=['POST'])
+def request_blood():
+    request_id = generate_6_digit_id()
+    requests_table.put_item(
+        Item={
+            'request_id': request_id,
+            'patient_name': request.form['patient_name'],
+            'blood_group': request.form['blood_group'],
+            'units_needed': int(request.form['units']),
+            'fulfilled_units': 0,
+            'status': 'pending',
+            'requested_at': str(datetime.now())
+        }
+    )
+    flash("Blood request submitted", "success")
+    return redirect(url_for('requestor_dashboard'))
+
+# ================= DONOR ACCEPT REQUEST =================
+@app.route('/donor/accept/<donor_id>/<request_id>', methods=['POST'])
+def donor_accept_request(donor_id, request_id):
+    assignments_table.put_item(
+        Item={
+            'assignment_id': generate_6_digit_id(),
+            'donor_id': donor_id,
+            'request_id': request_id,
+            'units_offered': int(request.form['units']),
+            'status': 'accepted',
+            'accepted_at': str(datetime.now())
+        }
+    )
+    flash("Request accepted", "success")
+    return redirect(url_for('donor_dashboard'))
+
+# ================= CONFIRM DONATION =================
+@app.route('/donor/confirm/<assignment_id>', methods=['POST'])
+def donor_confirm(assignment_id):
+    assignment = assignments_table.get_item(
+        Key={'assignment_id': assignment_id}
+    ).get('Item')
+
+    request_data = requests_table.get_item(
+        Key={'request_id': assignment['request_id']}
+    )['Item']
+
+    units = assignment['units_offered']
+    fulfilled = request_data['fulfilled_units'] + units
+    status = 'fulfilled' if fulfilled >= request_data['units_needed'] else 'partial'
+
+    requests_table.update_item(
+        Key={'request_id': request_data['request_id']},
+        UpdateExpression="SET fulfilled_units=:f, #s=:s",
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={
+            ':f': fulfilled,
+            ':s': status
+        }
+    )
+
+    donations_table.put_item(
+        Item={
+            'donation_id': generate_6_digit_id(),
+            'donor_id': assignment['donor_id'],
+            'request_id': assignment['request_id'],
+            'units': units,
+            'created_at': str(datetime.now())
+        }
+    )
+
+    flash("Donation confirmed", "success")
+    return redirect(url_for('donor_dashboard'))
+
+# ================= ADMIN =================
+@app.route('/admin/dashboard')
+def admin_dashboard():
+    return render_template(
+        'admin_dashboard.html',
+        stats=get_statistics(),
+        donors=donors_table.scan().get('Items', []),
+        requests=requests_table.scan().get('Items', []),
+        inventory=inventory_table.scan().get('Items', [])
+    )
+
+@app.route('/inventory/update', methods=['POST'])
+def inventory_update():
+    update_inventory(
+        request.form['blood_group'],
+        int(request.form['units']),
+        'add'
+    )
+    flash("Inventory updated", "success")
+    return redirect(url_for('admin_dashboard'))
+
+# ================= RUN =================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
