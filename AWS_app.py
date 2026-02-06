@@ -22,6 +22,51 @@ inventory_table = dynamodb.Table('BloodSync_Inventory')
 assignments_table = dynamodb.Table('BloodSync_Assignments')
 donations_table = dynamodb.Table('BloodSync_Donations')
 
+# ================= TABLE INITIALIZATION =================
+def initialize_tables():
+    """Create DynamoDB tables if they don't exist"""
+    client = boto3.client('dynamodb', region_name='ap-south-1')
+    existing_tables = client.list_tables()['TableNames']
+    
+    tables_to_create = {
+        'BloodSync_Users': [
+            {'AttributeName': 'user_id', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Donors': [
+            {'AttributeName': 'donor_id', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Requestors': [
+            {'AttributeName': 'requestor_id', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Requests': [
+            {'AttributeName': 'request_id', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Inventory': [
+            {'AttributeName': 'blood_group', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Assignments': [
+            {'AttributeName': 'assignment_id', 'KeyType': 'HASH'},
+        ],
+        'BloodSync_Donations': [
+            {'AttributeName': 'donation_id', 'KeyType': 'HASH'},
+        ],
+    }
+    
+    for table_name, key_schema in tables_to_create.items():
+        if table_name not in existing_tables:
+            try:
+                client.create_table(
+                    TableName=table_name,
+                    KeySchema=key_schema,
+                    AttributeDefinitions=[
+                        {'AttributeName': key_schema[0]['AttributeName'], 'AttributeType': 'S'}
+                    ],
+                    BillingMode='PAY_PER_REQUEST'
+                )
+                print(f"Created table: {table_name}")
+            except Exception as e:
+                print(f"Error creating table {table_name}: {e}")
+
 # ================= HELPERS =================
 def generate_6_digit_id():
     return str(random.randint(100000, 999999))
@@ -56,22 +101,34 @@ def update_inventory(blood_group, units, operation):
 
 # ================= DASHBOARD STATS =================
 def get_statistics():
-    donors = donors_table.scan().get('Items', [])
-    requests_data = requests_table.scan().get('Items', [])
-    inventory = inventory_table.scan().get('Items', [])
+    try:
+        donors = donors_table.scan().get('Items', [])
+        requests_data = requests_table.scan().get('Items', [])
+        inventory = inventory_table.scan().get('Items', [])
 
-    total_units = sum(int(i['units']) for i in inventory)
-    critical = [i['blood_group'] for i in inventory if int(i['units']) < 20]
+        total_units = sum(int(i['units']) for i in inventory)
+        critical = [i['blood_group'] for i in inventory if int(i['units']) < 20]
 
-    return {
-        'total_donors': len(donors),
-        'total_requests': len(requests_data),
-        'active_requests': sum(1 for r in requests_data if r['status'] in ['pending', 'partial']),
-        'fulfilled_requests': sum(1 for r in requests_data if r['status'] == 'fulfilled'),
-        'total_units': total_units,
-        'critical_groups': critical,
-        'inventory': inventory
-    }
+        return {
+            'total_donors': len(donors),
+            'total_requests': len(requests_data),
+            'active_requests': sum(1 for r in requests_data if r['status'] in ['pending', 'partial']),
+            'fulfilled_requests': sum(1 for r in requests_data if r['status'] == 'fulfilled'),
+            'total_units': total_units,
+            'critical_groups': critical,
+            'inventory': inventory
+        }
+    except Exception as e:
+        print(f"Error fetching statistics: {e}")
+        return {
+            'total_donors': 0,
+            'total_requests': 0,
+            'active_requests': 0,
+            'fulfilled_requests': 0,
+            'total_units': 0,
+            'critical_groups': [],
+            'inventory': []
+        }
 
 # ================= HOME =================
 @app.route('/')
@@ -256,4 +313,5 @@ def inventory_update():
 
 # ================= RUN =================
 if __name__ == "__main__":
+    initialize_tables()
     app.run(host="0.0.0.0", port=5000, debug=True)
