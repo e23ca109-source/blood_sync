@@ -3,10 +3,29 @@ import boto3
 import random
 from datetime import datetime
 from decimal import Decimal
+import logging
+import sys
+
+# ================= LOGGING SETUP =================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/bloodsync.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ================= APP CONFIG =================
-app = Flask(__name__)
-app.secret_key = "bloodsync_secret_key"
+logger.info("========== BloodSync Application Starting ==========")
+try:
+    app = Flask(__name__)
+    app.secret_key = "bloodsync_secret_key"
+    logger.info("✓ Flask app initialized")
+except Exception as e:
+    logger.error(f"✗ Failed to initialize Flask app: {e}")
+    sys.exit(1)
 
 # ================= AWS CONFIG =================
 dynamodb = None
@@ -40,17 +59,31 @@ def initialize_tables():
     """Create DynamoDB tables if they don't exist and wait for them to be active"""
     import time
     
+    logger.info("\n" + "="*60)
+    logger.info("Initializing DynamoDB tables...")
+    logger.info("="*60)
+    
     try:
+        logger.info("Connecting to AWS DynamoDB (ap-south-1)...")
         client = boto3.client('dynamodb', region_name='ap-south-1')
+        # Test connection by listing tables
+        tables = client.list_tables()
+        logger.info(f"✓ AWS connection successful")
+        logger.info(f"✓ Found {len(tables.get('TableNames', []))} existing tables")
     except Exception as e:
-        print(f"Error connecting to AWS: {e}")
-        print("Make sure your AWS credentials are configured correctly")
+        logger.error(f"\n✗ AWS Connection Error:")
+        logger.error(f"  {type(e).__name__}: {e}")
+        logger.error(f"\n  This usually means:")
+        logger.error(f"  - AWS credentials are not configured")
+        logger.error(f"  - Wrong AWS region specified")
+        logger.error(f"  - IAM permissions are insufficient")
+        logger.error(f"\n  To fix, run: aws configure")
         return False
     
     try:
         existing_tables = client.list_tables()['TableNames']
     except Exception as e:
-        print(f"Error listing tables: {e}")
+        logger.error(f"✗ Error listing existing tables: {e}")
         return False
     
     tables_to_create = {
@@ -78,10 +111,11 @@ def initialize_tables():
     }
     
     # Create missing tables
-    print("Initializing DynamoDB tables...")
+    logger.info("\nCreating/verifying tables...")
     for table_name, key_schema in tables_to_create.items():
         if table_name not in existing_tables:
             try:
+                logger.info(f"  Creating table: {table_name}")
                 client.create_table(
                     TableName=table_name,
                     KeySchema=key_schema,
@@ -90,17 +124,17 @@ def initialize_tables():
                     ],
                     BillingMode='PAY_PER_REQUEST'
                 )
-                print(f"✓ Creating table: {table_name}")
+                logger.info(f"  ✓ Table creation initiated: {table_name}")
             except client.exceptions.ResourceInUseException:
-                print(f"✓ Table already exists: {table_name}")
+                logger.info(f"  ✓ Table already exists: {table_name}")
             except Exception as e:
-                print(f"✗ Error creating table {table_name}: {e}")
+                logger.error(f"  ✗ Error creating table {table_name}: {e}")
                 return False
         else:
-            print(f"✓ Table exists: {table_name}")
+            logger.info(f"  ✓ Table exists: {table_name}")
     
     # Wait for all tables to be active
-    print("\nWaiting for tables to be active...")
+    logger.info("\nWaiting for tables to become active (max 60 seconds)...")
     for table_name in tables_to_create.keys():
         try:
             waiter = client.get_waiter('table_exists')
@@ -108,14 +142,15 @@ def initialize_tables():
                 TableName=table_name,
                 WaiterConfig={'Delay': 1, 'MaxAttempts': 60}
             )
-            print(f"✓ Table {table_name} is now active")
+            logger.info(f"  ✓ {table_name} is active")
         except Exception as e:
-            print(f"✗ Error waiting for table {table_name}: {e}")
+            logger.error(f"  ✗ Timeout waiting for {table_name}: {e}")
             return False
     
-    print("\n✓ All tables initialized successfully!\n")
+    logger.info("\n✓ All tables ready!")
     # Initialize table references after successful table creation
     init_dynamodb()
+    logger.info("✓ Database references initialized")
     return True
 
 # ================= HELPERS =================
@@ -188,17 +223,86 @@ def get_statistics():
             'inventory': []
         }
 
+# ================= ERROR HANDLERS =================
+@app.errorhandler(404)
+def page_not_found(error):
+    logger.error(f"404 Error: {request.path} not found")
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def server_error(error):
+    logger.error(f"500 Server Error: {error}")
+    import traceback
+    logger.error(traceback.format_exc())
+    return render_template('500.html'), 500
+
+@app.before_request
+def log_request():
+    logger.info(f"incoming request: {request.method} {request.path}")
+
 # ================= HOME =================
-@app.route('/')
-def home():
-    stats = get_statistics()
+@app.route('/health')
+def health():
+    """Health check endpoint"""
     try:
         ensure_tables_initialized()
-        recent = requests_table.scan().get('Items', [])[:5]
+        return jsonify({'status': 'healthy', 'message': 'Application is running'}), 200
     except Exception as e:
-        print(f"Error fetching recent requests: {e}")
-        recent = []
-    return render_template('index.html', stats=stats, recent_requests=recent)
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+
+@app.route('/debug')
+def debug():
+    """Debug endpoint to check app status"""
+    import os
+    debug_info = {
+        'status': 'running',
+        'tables_initialized': users_table is not None,
+        'templates_path': app.template_folder,
+        'templates_exist': os.path.exists(app.template_folder) if app.template_folder else False,
+        'static_path': app.static_folder,
+        'static_exists': os.path.exists(app.static_folder) if app.static_folder else False,
+        'registered_routes': [str(rule) for rule in app.url_map.iter_rules()]
+    }
+    
+    if app.template_folder:
+        try:
+            templates = os.listdir(app.template_folder)
+            debug_info['templates_files'] = templates
+        except Exception as e:
+            debug_info['templates_error'] = str(e)
+    
+    return jsonify(debug_info), 200
+
+@app.route('/test')
+def test():
+    """Simple test endpoint"""
+    return jsonify({
+        'message': 'Flask is working!',
+        'tables_initialized': users_table is not None,
+        'version': '1.0.0'
+    }), 200
+
+@app.route('/')
+def home():
+    try:
+        logger.info("Loading home page...")
+        stats = get_statistics()
+        try:
+            ensure_tables_initialized()
+            recent = requests_table.scan().get('Items', [])[:5]
+        except Exception as e:
+            logger.warning(f"Could not fetch recent requests: {e}")
+            recent = []
+        logger.info(f"Home page stats: {stats}")
+        logger.info("Rendering index.html")
+        result = render_template('index.html', stats=stats, recent_requests=recent)
+        logger.info("index.html rendered successfully")
+        return result
+    except Exception as e:
+        logger.error(f"Error on home page: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"<h1>Error Loading Home Page</h1><pre>{str(e)}</pre>", 500
 
 # ================= AUTH =================
 @app.route('/register', methods=['POST'])
@@ -438,5 +542,53 @@ def inventory_update():
 
 # ================= RUN =================
 if __name__ == "__main__":
-    initialize_tables()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    logger.info("="*60)
+    logger.info("BloodSync Application Starting...")
+    logger.info("="*60)
+    
+    # Initialize tables
+    if not initialize_tables():
+        logger.error("\n" + "="*60)
+        logger.error("✗ FATAL ERROR: Failed to initialize DynamoDB tables!")
+        logger.error("✗ The application cannot start without database tables.")
+        logger.error("="*60)
+        logger.error("\nPlease check:")
+        logger.error("1. AWS credentials are configured correctly")
+        logger.error("2. You have permissions to create DynamoDB tables")
+        logger.error("3. Your AWS account has DynamoDB access in ap-south-1 region")
+        logger.error("\nTo configure AWS credentials, run:")
+        logger.error("  aws configure")
+        logger.error("\nLog file: /tmp/bloodsync.log")
+        logger.error("="*60)
+        sys.exit(1)
+    
+    logger.info("="*60)
+    logger.info("✓ Application initialized successfully!")
+    logger.info("✓ Starting Flask server on http://0.0.0.0:5000")
+    logger.info("✓ Health check: http://YOUR_IP:5000/health")
+    logger.info("✓ Debug info: http://YOUR_IP:5000/debug")
+    logger.info("✓ Simple test: http://YOUR_IP:5000/test")
+    logger.info("✓ Logs saved to: /tmp/bloodsync.log")
+    logger.info("="*60 + "\n")
+    
+    # Check templates directory
+    import os
+    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    logger.info(f"Template directory: {template_dir}")
+    logger.info(f"Template directory exists: {os.path.exists(template_dir)}")
+    if os.path.exists(template_dir):
+        try:
+            templates = os.listdir(template_dir)
+            logger.info(f"Available templates: {templates}")
+        except Exception as e:
+            logger.error(f"Error listing templates: {e}")
+    logger.info("="*60 + "\n")
+    
+    try:
+        logger.info("Flask app is now running...")
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    except Exception as e:
+        logger.error(f"\n✗ Error starting Flask app: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)

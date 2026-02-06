@@ -1,0 +1,43 @@
+# BloodSync SystemD Service File
+# 
+# How to use:
+# 1. Copy this file to /etc/systemd/system/bloodsync.service
+#    sudo cp bloodsync.service /etc/systemd/system/
+#
+# 2. Reload systemd daemon
+#    sudo systemctl daemon-reload
+#
+# 3. Enable the service (start on boot)
+#    sudo systemctl enable bloodsync
+#
+# 4. Start the service
+#    sudo systemctl start bloodsync
+#
+# 5. Check status
+#    sudo systemctl status bloodsync
+#
+# 6. View logs
+#    sudo journalctl -u bloodsync -f
+#
+# 7. Stop the service
+#    sudo systemctl stop bloodsync
+
+[Unit]
+Description=BloodSync Blood Bank Management Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/blood_sync
+Environment="PATH=/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /home/ec2-user/blood_sync/AWS_app.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bloodsync
+
+[Install]
+WantedBy=multi-user.target
