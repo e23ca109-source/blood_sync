@@ -24,9 +24,15 @@ donations_table = dynamodb.Table('BloodSync_Donations')
 
 # ================= TABLE INITIALIZATION =================
 def initialize_tables():
-    """Create DynamoDB tables if they don't exist"""
+    """Create DynamoDB tables if they don't exist and wait for them to be active"""
+    import time
     client = boto3.client('dynamodb', region_name='ap-south-1')
-    existing_tables = client.list_tables()['TableNames']
+    
+    try:
+        existing_tables = client.list_tables()['TableNames']
+    except Exception as e:
+        print(f"Error listing tables: {e}")
+        return
     
     tables_to_create = {
         'BloodSync_Users': [
@@ -52,6 +58,7 @@ def initialize_tables():
         ],
     }
     
+    # Create missing tables
     for table_name, key_schema in tables_to_create.items():
         if table_name not in existing_tables:
             try:
@@ -63,9 +70,18 @@ def initialize_tables():
                     ],
                     BillingMode='PAY_PER_REQUEST'
                 )
-                print(f"Created table: {table_name}")
+                print(f"Creating table: {table_name}")
             except Exception as e:
                 print(f"Error creating table {table_name}: {e}")
+    
+    # Wait for all tables to be active
+    for table_name in tables_to_create.keys():
+        try:
+            waiter = client.get_waiter('table_exists')
+            waiter.wait(TableName=table_name)
+            print(f"Table {table_name} is now active")
+        except Exception as e:
+            print(f"Error waiting for table {table_name}: {e}")
 
 # ================= HELPERS =================
 def generate_6_digit_id():
@@ -134,7 +150,11 @@ def get_statistics():
 @app.route('/')
 def home():
     stats = get_statistics()
-    recent = requests_table.scan().get('Items', [])[:5]
+    try:
+        recent = requests_table.scan().get('Items', [])[:5]
+    except Exception as e:
+        print(f"Error fetching recent requests: {e}")
+        recent = []
     return render_template('index.html', stats=stats, recent_requests=recent)
 
 # ================= AUTH =================
@@ -155,11 +175,16 @@ def register():
 
 @app.route('/login', methods=['POST'])
 def login():
-    users = users_table.scan().get('Items', [])
-    for u in users:
-        if u['email'] == request.form['email'] and u['password'] == request.form['password']:
-            session['user'] = u
-            return redirect(url_for(f"{u['role']}_dashboard"))
+    try:
+        users = users_table.scan().get('Items', [])
+        for u in users:
+            if u['email'] == request.form['email'] and u['password'] == request.form['password']:
+                session['user'] = u
+                return redirect(url_for(f"{u['role']}_dashboard"))
+    except Exception as e:
+        print(f"Error during login: {e}")
+        flash("Login error", "danger")
+        return redirect(url_for('home'))
     flash("Invalid login", "danger")
     return redirect(url_for('home'))
 
@@ -193,7 +218,11 @@ def donor_register():
 
 @app.route('/donor/dashboard')
 def donor_dashboard():
-    donors = donors_table.scan().get('Items', [])
+    try:
+        donors = donors_table.scan().get('Items', [])
+    except Exception as e:
+        print(f"Error fetching donors: {e}")
+        donors = []
     return render_template('donor_dashboard.html', donors=donors)
 
 # ================= REQUESTOR =================
@@ -215,7 +244,11 @@ def requestor_register():
 
 @app.route('/requestor/dashboard')
 def requestor_dashboard():
-    inventory = inventory_table.scan().get('Items', [])
+    try:
+        inventory = inventory_table.scan().get('Items', [])
+    except Exception as e:
+        print(f"Error fetching inventory: {e}")
+        inventory = []
     return render_template('requestor_dashboard.html', inventory=inventory)
 
 # ================= BLOOD REQUEST =================
@@ -293,12 +326,22 @@ def donor_confirm(assignment_id):
 # ================= ADMIN =================
 @app.route('/admin/dashboard')
 def admin_dashboard():
+    try:
+        donors = donors_table.scan().get('Items', [])
+        requests_data = requests_table.scan().get('Items', [])
+        inventory = inventory_table.scan().get('Items', [])
+    except Exception as e:
+        print(f"Error fetching admin data: {e}")
+        donors = []
+        requests_data = []
+        inventory = []
+    
     return render_template(
         'admin_dashboard.html',
         stats=get_statistics(),
-        donors=donors_table.scan().get('Items', []),
-        requests=requests_table.scan().get('Items', []),
-        inventory=inventory_table.scan().get('Items', [])
+        donors=donors,
+        requests=requests_data,
+        inventory=inventory
     )
 
 @app.route('/inventory/update', methods=['POST'])
